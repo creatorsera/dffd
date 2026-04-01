@@ -1,7 +1,7 @@
 """
 app.py — Smart Pipeline Scraper (Standalone)
 Phase 1: Quick (Sitemap) -> Phase 2: Deep (Crawl) -> Phase 3: Loop (Relentless)
-Keeps all input data. No emojis. Clean 3-sheet XLSX.
+Keeps all input data. CSV Column selection. Clean 3-sheet XLSX.
 """
 
 import streamlit as st
@@ -254,34 +254,54 @@ def _cl(ws, r, c, v, fl=None, fn_=None, al=None):
     if al: cl.alignment = al
     cl.border = _bd()
 
-def build_xlsx(results):
+def build_xlsx(results, original_columns):
     wb = Workbook()
     ws = wb.active; ws.title = "Results"; ws.freeze_panes = "A2"; ws.row_dimensions[1].height = 26
-    base_cols = [("#",5),("Source URL",35),("Domain",22),("Best Email",32),("Tier",9),
-                 ("Status",16),("Score",8),("Reason",22),("Phase Found",12),
+    
+    # Write original CSV columns first (if any)
+    for ci, col_name in enumerate(original_columns, 1):
+        w = min(max(len(str(col_name)) * 2, 15), 40)
+        _hdr(ws, 1, ci, col_name, w=w)
+
+    # Write scraper columns appended to the right
+    scrape_cols = [("Domain",22),("Best Email",32),("Tier",9),("Status",16),
+                 ("Score",8),("Reason",22),("Phase Found",12),
                  ("Pages",8),("Time(s)",9),("Total Emails",12)]
-    for ci, (n, w) in enumerate(base_cols, 1): _hdr(ws, 1, ci, n, w)
+    val_offset = len(original_columns)
+    for ci, (n, w) in enumerate(scrape_cols, val_offset + 1):
+        _hdr(ws, 1, ci, n, w=w)
 
     for ri, row in enumerate(results, 2):
+        orig_data = row.get("orig_data", {})
+        
+        # Write original data
+        for ci, col_name in enumerate(original_columns, 1):
+            val = orig_data.get(col_name, "")
+            try:
+                if pd.isna(val): val = ""
+            except TypeError: pass
+            _cl(ws, ri, ci, val, RF_N, _fn(s=9), _lt())
+
+        # Write scraped data
         v = row.get("val"); st_ = v.get("status","") if v else ""
         rf = SF.get(st_, RF_N); em = row.get("best_email","")
         tf = TF1 if "1" in row.get("tier","") else (TF2 if "2" in row.get("tier","") else TF3)
-        _cl(ws,ri,1,ri-1,RF_N,_fn(),_ct())
-        _cl(ws,ri,2,row.get("url",""),RF_N,_fn(s=9),_lt())
-        _cl(ws,ri,3,row.get("domain",""),RF_N,_fn(True),_lt())
-        _cl(ws,ri,4,em,EF_D if st_=="Deliverable" else RF_N,_fn(True,n="Courier New",s=9),_lt())
-        _cl(ws,ri,5,row.get("tier","—"),tf,_fn(),_ct())
+        
+        v_idx = val_offset + 1
+        _cl(ws, ri, v_idx, row.get("domain",""), RF_N, _fn(True), _lt())
+        _cl(ws, ri, v_idx+1, em, EF_D if st_=="Deliverable" else RF_N, _fn(True,n="Courier New",s=9), _lt())
+        _cl(ws, ri, v_idx+2, row.get("tier","—"), tf, _fn(), _ct())
         sf_ = SF.get(st_)
-        _cl(ws,ri,6,st_ or "—",sf_ or RF_N,_fn(True,c="FFFFFF" if sf_ else "111111"),_ct())
-        _cl(ws,ri,7,row.get("score","—") if row.get("score") is not None else "—",RF_N,_fn(True),_ct())
-        _cl(ws,ri,8,v.get("reason","—") if v else "—",RF_N,_fn(s=9),_lt())
-        _cl(ws,ri,9,row.get("phase","—"),RF_N,_fn(),_ct())
-        _cl(ws,ri,10,row.get("pages",0),RF_N,_fn(),_ct())
-        _cl(ws,ri,11,row.get("time",""),RF_N,_fn(),_ct())
-        _cl(ws,ri,12,"; ".join(row.get("all_emails",[])),RF_N,_fn(n="Courier New",s=8,c="666666"),_lt())
+        _cl(ws, ri, v_idx+3, st_ or "—", sf_ or RF_N, _fn(True,c="FFFFFF" if sf_ else "111111"), _ct())
+        _cl(ws, ri, v_idx+4, row.get("score","—") if row.get("score") is not None else "—", RF_N, _fn(True), _ct())
+        _cl(ws, ri, v_idx+5, v.get("reason","—") if v else "—", RF_N, _fn(s=9), _lt())
+        _cl(ws, ri, v_idx+6, row.get("phase","—"), RF_N, _fn(), _ct())
+        _cl(ws, ri, v_idx+7, row.get("pages",0), RF_N, _fn(), _ct())
+        _cl(ws, ri, v_idx+8, row.get("time",""), RF_N, _fn(), _ct())
+        _cl(ws, ri, v_idx+9, "; ".join(row.get("all_emails",[])), RF_N, _fn(n="Courier New",s=8,c="666666"), _lt())
 
     ws2 = wb.create_sheet("Crawl Log"); ws2.freeze_panes = "A2"
-    for ci, (n, w) in enumerate([("Domain",22),("Page URL",50),("Action",10),("Detail",50),("Time(s)",8)], 1): _hdr(ws2, 1, ci, n, w)
+    for ci, (n, w) in enumerate([("Domain",22),("Page URL",50),("Action",10),("Detail",50)], 1): _hdr(ws2, 1, ci, n, w)
     r2 = 2
     for row in results:
         dom = row.get("domain","")
@@ -354,6 +374,9 @@ st.markdown(f"""
 .lx {{ color:#22d3ee; font-weight:700; }}
 .mh-info {{ background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; padding:8px 13px; font-size:12px; color:#15803d; font-weight:600; margin:4px 0; }}
 .mh-warn {{ background:#fff1f2; border:1px solid #fecdd3; border-radius:8px; padding:8px 13px; font-size:12px; color:#be123c; font-weight:600; margin:4px 0; }}
+.cp {{ background:#fafaf8; border:1px solid #e8e8e4; border-radius:8px; padding:10px 14px; margin:6px 0; font-size:11.5px; }}
+.cp-l {{ font-size:9.5px; font-weight:700; color:#999; text-transform:uppercase; letter-spacing:1px; margin-bottom:4px; }}
+.cp-v {{ font-family:'JetBrains Mono',monospace; font-size:11px; color:#333; line-height:1.6; }}
 </style>""", unsafe_allow_html=True)
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
@@ -363,35 +386,59 @@ with st.sidebar:
     st.divider()
     res = st.session_state.get("sc_results", [])
     if res:
-        xlsx = build_xlsx(res)
+        orig_cols = st.session_state.get("sc_original_cols", [])
+        xlsx = build_xlsx(res, orig_cols)
         st.download_button("Export .xlsx", xlsx, f"scrape_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="sc_xlsx", use_container_width=True)
     st.divider()
-    st.markdown('<div style="font-size:9px;color:#333;line-height:1.8">Phase 1: Quick (4 pages max)<br>Phase 2: Deep (30 pages max)<br>Phase 3: Loop (Relentless)</div>', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:9px;color:#333;line-height:1.8">Phase 1: Quick (4 pages max)<br>Phase 2: Deep (30 pages max)<br>Phase 3: Loop (Relentless)<br><br>Upload CSV to keep all<br>original columns intact.</div>', unsafe_allow_html=True)
 
 # ── State ──────────────────────────────────────────────────────────────────────
-for k, v in {"sc_results":[],"sc_running":False,"sc_idx":0,"sc_log":[],"sc_queue":[],"sc_phase":"Quick"}.items():
+for k, v in {"sc_results":[],"sc_running":False,"sc_idx":0,"sc_log":[],"sc_queue":[],"sc_phase":"Quick","sc_original_cols":[]}.items():
     if k not in st.session_state: st.session_state[k] = v
 
 # ── Header ────────────────────────────────────────────────────────────────────
-st.markdown(f"""<div class="mh-ph"><div class="mh-pi">🔍</div><div><div class="mh-pt">Smart Pipeline Scraper</div><div class="mh-ps">Automated 3-phase scanning · clean XLSX export</div></div></div>""", unsafe_allow_html=True)
+st.markdown(f"""<div class="mh-ph"><div class="mh-pi">🔍</div><div><div class="mh-pt">Smart Pipeline Scraper</div><div class="mh-ps">CSV column selection · automated 3-phase · keeps all data</div></div></div>""", unsafe_allow_html=True)
 
 # ── Input ─────────────────────────────────────────────────────────────────────
 c1, c2 = st.columns([4, 1])
+df = None
+url_col_name = None
+
 with c1:
     raw = st.text_area("u", label_visibility="collapsed", placeholder="https://site1.com\nhttps://site2.com\nsite3.org", height=100, key="url_in")
 with c2:
-    up = st.file_uploader("CSV/TXT", type=["csv","txt"], label_visibility="collapsed", key="sc_up")
+    up = st.file_uploader("CSV", type=["csv"], label_visibility="collapsed", key="sc_up")
 
 urls = []
+orig_data_map = {}
+original_columns = []
+
+if up:
+    try:
+        df = pd.read_csv(io.BytesIO(up.read()))
+        cols = list(df.columns)
+        url_hints = ["url", "website", "site", "domain", "link", "href"]
+        det_col = next((c for c in cols if any(h in c.lower() for h in url_hints)), cols[0])
+        
+        st.markdown(f'<div class="mh-info">Loaded <strong>{len(df)}</strong> rows · <strong>{len(cols)}</strong> columns</div>', unsafe_allow_html=True)
+        
+        url_col_name = st.selectbox("Select URL Column", cols, index=cols.index(det_col), key="sc_csv_col")
+        original_columns = list(df.columns)
+        
+        for i, row in df.iterrows():
+            u = str(row[url_col_name]).strip()
+            if pd.notna(row[url_col_name]) and u:
+                if not u.startswith("http"): u = "https://" + u
+                if u.startswith("http"):
+                    urls.append(u)
+                    orig_data_map[u] = row.to_dict()
+                    
+        st.caption(f"Found {len(urls)} valid URLs in '{url_col_name}'")
+    except Exception as e:
+        st.error(f"Failed to parse CSV: {e}")
+
 if raw:
     for line in raw.splitlines():
-        line = line.strip()
-        if line:
-            if not line.startswith("http"): line = "https://" + line
-            urls.append(line)
-if up:
-    rb = up.read().decode("utf-8","ignore")
-    for line in rb.splitlines():
         line = line.strip()
         if line:
             if not line.startswith("http"): line = "https://" + line
@@ -401,7 +448,11 @@ urls = list(set(urls))
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 if urls:
-    st.markdown(f'<div class="mh-info">Loaded <strong>{len(urls)}</strong> unique URLs</div>', unsafe_allow_html=True)
+    if not original_columns:
+        st.markdown(f'<div class="mh-info">Loaded <strong>{len(urls)}</strong> unique URLs (from text)</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="mh-info">Loaded <strong>{len(urls)}</strong> unique URLs (from CSV) · <strong>{len(original_columns)}</strong> columns will be kept</div>', unsafe_allow_html=True)
+
     s1, s2, s3, s4 = st.columns(4)
     with s1: skip_t1 = st.toggle("Stop at Tier 1", value=True, key="sc_t1")
     with s2: do_loop = st.toggle("Enable Looping", value=True, key="sc_loop")
@@ -416,7 +467,9 @@ with vc1:
         if st.button(f"Start Pipeline ({len(urls)} URLs)", type="primary", use_container_width=True, disabled=not urls, key="sc_go"):
             st.session_state.sc_results = []; st.session_state.sc_idx = 0; st.session_state.sc_log = []
             st.session_state.sc_running = True; st.session_state.sc_phase = "Quick"
-            st.session_state.sc_queue = urls; st.rerun()
+            st.session_state.sc_queue = [{"url": u, "orig_data": orig_data_map.get(u, {})} for u in urls]
+            st.session_state.sc_original_cols = original_columns
+            st.rerun()
     else:
         if st.button("Stop", type="secondary", use_container_width=True, key="sc_stop"):
             st.session_state.sc_running = False; st.rerun()
@@ -435,14 +488,13 @@ if st.session_state.sc_running and tot > 0:
     phase = st.session_state.sc_phase
     pcol = {"Quick":"#16a34a","Deep":"#d97706","Loop":"#dc2626"}.get(phase, "#111")
     st.markdown(f'<div style="font-size:12px;font-weight:700;color:#111;margin:6px 0 2px">'
-        f'Phase: <span style="color:{pcol};background:{pcol}15;padding:2px 8px;border-radius:4px;font-size:10px">{phase}</span> · {idx}/{tot} — <code>{cur[:40]}</code></div>'
+        f'Phase: <span style="color:{pcol};background:{pcol}15;padding:2px 8px;border-radius:4px;font-size:10px">{phase}</span> · {idx}/{tot} — <code>{cur.get("url","")[:40]}</code></div>'
         f'<div class="vp"><div class="vf" style="width:{pct}%;background:{pcol}"></div></div>'
         f'<div style="font-size:20px;font-weight:800;color:{pcol};text-align:right;margin-top:-4px">{pct}%</div>', unsafe_allow_html=True)
 
 ll = st.session_state.sc_log
 if ll:
     h = ""
-    # FIX: Unpack exactly 3 elements (source, action, detail)
     for source, action, detail in ll[-100:]:
         if action == "row": h += f'<div class="lr">[ {detail} ]</div>'
         elif action == "hit": h += f'<div class="li">  -> {detail}</div>'
@@ -485,9 +537,9 @@ if st.session_state.sc_running:
     if idx >= tot:
         st.session_state.sc_running = False; st.rerun()
     else:
-        url = q[idx]; domain = urlparse(url).netloc
+        item = q[idx]; url = item["url"]; domain = urlparse(url).netloc
+        orig_data = item.get("orig_data", {})
         
-        # FIX: Ensure all manual logs use exactly 3 elements (source, action, detail)
         st.session_state.sc_log.append(("", "row", f"{domain} (Phase: {st.session_state.sc_phase})"))
         
         result_data = None
@@ -523,7 +575,8 @@ if st.session_state.sc_running:
                 "tier": tier_short(best) if best else "—",
                 "all_emails": result_data["emails"], "phase": result_data["phase"],
                 "pages": result_data["pages"], "time": result_data["time"],
-                "logs": result_data["logs"], "val": None, "score": None
+                "logs": result_data["logs"], "val": None, "score": None,
+                "orig_data": orig_data
             }
             
             if auto_val and best:
@@ -551,9 +604,11 @@ if not urls and not res:
         <div style="font-size:48px;opacity:.08;margin-bottom:16px">🔍</div>
         <div style="font-size:18px;font-weight:800;color:#111;margin-bottom:10px">Smart Pipeline Scraper</div>
         <div style="font-size:12.5px;color:#aaa;line-height:2;max-width:420px;margin:0 auto">
+            <strong>Text Area:</strong> Paste URLs (one per line).<br>
+            <strong>Upload CSV:</strong> Pick which column contains the URLs.<br>
+            All other CSV columns are kept intact in the XLSX export.<br><br>
             <strong style="color:#16a34a">Phase 1 (Quick):</strong> Sitemap top 4 pages. ~5s per site.<br>
-            <strong style="color:#d97706">Phase 2 (Deep):</strong> Auto-triggers if Quick fails. Crawls 30 pages.<br>
-            <strong style="color:#dc2626">Phase 3 (Loop):</strong> Relentless mode if Deep fails. Randomized delays.<br><br>
-            No emojis. Full crawl log in XLSX. All input URLs retained.
+            <strong style="color:#d97706">Phase 2 (Deep):</strong> Auto-triggers if Quick fails.<br>
+            <strong style="color:#dc2626">Phase 3 (Loop):</strong> Relentless mode if Deep fails.
         </div>
     </div>""", unsafe_allow_html=True)
