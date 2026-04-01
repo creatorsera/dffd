@@ -6,7 +6,7 @@ Keeps all input data. No emojis. Clean 3-sheet XLSX.
 
 import streamlit as st
 import requests, re, io, time, random, pandas as pd
-import xml.etree.ElementTree as ET, urllib.robotparser
+import xml.etree.ElementTree as ET
 from urllib.parse import urljoin, urlparse
 from collections import deque
 from datetime import datetime
@@ -15,6 +15,7 @@ from email_validator import validate_email as ev_validate, EmailNotValidError
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+import smtplib
 
 try:
     import dns.resolver as _dns_resolver
@@ -26,18 +27,16 @@ except ImportError:
 EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", re.IGNORECASE)
 TIER1 = re.compile(r"^(editor|admin|press|advert|contact)[a-z0-9._%+\-]*@", re.IGNORECASE)
 TIER2 = re.compile(r"^(info|sales|hello|office|team|support|help)[a-z0-9._%+\-]*@", re.IGNORECASE)
-BLOCKED_TLDS = {'png','jpg','jpeg','webp','gif','svg','ico','mp4','mp3','pdf','zip','exe','dmg'}
-PLACEHOLDER_DOMAINS = {'example.com','test.com','domain.com','email.com','placeholder.com'}
-PLACEHOLDER_LOCALS = {'you','user','name','email','test','example','someone','username'}
+BLOCKED_TLDS = ['png','jpg','jpeg','webp','gif','svg','ico','mp4','mp3','pdf','zip','exe','dmg']
+PLACEHOLDER_DOMAINS = ['example.com','test.com','domain.com','email.com','placeholder.com']
+PLACEHOLDER_LOCALS = ['you','user','name','email','test','example','someone','username']
 SUPPRESS_PREFIXES = ['noreply','no-reply','donotreply','bounce','unsubscribe','postmaster','webmaster','daemon']
-FREE_EMAIL_DOMAINS = {"gmail.com","yahoo.com","hotmail.com","outlook.com","aol.com","icloud.com"}
-
+FREE_EMAIL_DOMAINS = ["gmail.com","yahoo.com","hotmail.com","outlook.com","aol.com","icloud.com"]
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/17 Safari/605.1.15",
     "Mozilla/5.0 (X11; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0",
 ]
-
 PRIORITY_KW = [("contact",100),("write-for-us",95),("guest-post",90),("advertise",88),("about",75),("team",70)]
 
 def is_valid_email(e):
@@ -64,8 +63,7 @@ def pick_best(emails):
         if h: return h[0]
     return pool[0]
 
-def make_headers():
-    return {"User-Agent": random.choice(USER_AGENTS), "Accept": "text/html,*/*;q=0.9"}
+def make_headers(): return {"User-Agent": random.choice(USER_AGENTS), "Accept": "text/html,*/*;q=0.9"}
 
 def fetch_page(url, timeout=10):
     try:
@@ -122,20 +120,18 @@ def get_sitemap_urls(root_url, limit=4):
 
 # ── SCRAPER PHASES ────────────────────────────────────────────────────────────
 def run_quick_scan(root_url, skip_t1):
-    """Phase 1: Sitemap top 4 pages only. ~5s."""
     logs = []; t0 = time.time(); domain = urlparse(root_url).netloc
     all_e = set(); visited = set()
-    
     p_urls, _ = get_sitemap_urls(root_url, limit=4)
     if not p_urls: p_urls = [root_url]
-    
     for url in p_urls:
         if url in visited: continue
         visited.add(url)
         logs.append((url, "hit", f"Quick: {urlparse(url).path[:40]}"))
         html, status = fetch_page(url, timeout=8)
         if status == 403:
-            logs.append((url, "blocked", "Cloudflare/403 in Quick phase")); return {"emails": sort_by_tier(all_e), "time": round(time.time()-t0,1), "pages": len(visited), "blocked": True, "logs": logs}
+            logs.append((url, "blocked", "Cloudflare/403 in Quick phase"))
+            return {"emails": sort_by_tier(all_e), "time": round(time.time()-t0,1), "pages": len(visited), "blocked": True, "logs": logs}
         if html:
             new = extract_emails(html) - all_e
             all_e.update(new)
@@ -145,14 +141,11 @@ def run_quick_scan(root_url, skip_t1):
     return {"emails": sort_by_tier(all_e), "time": round(time.time()-t0,1), "pages": len(visited), "blocked": False, "logs": logs}
 
 def run_deep_scan(root_url, skip_t1, max_pages=30):
-    """Phase 2: Sitemap + crawl up to max_pages."""
     logs = []; t0 = time.time(); domain = urlparse(root_url).netloc
     all_e = set(); visited = set(); queue = deque()
-    
     p_urls, _ = get_sitemap_urls(root_url, limit=999)
     for u in reversed(p_urls): queue.appendleft((u, 0))
     queue.append((root_url, 0))
-    
     pd_ = 0
     while queue and pd_ < max_pages:
         url, depth = queue.popleft()
@@ -161,7 +154,8 @@ def run_deep_scan(root_url, skip_t1, max_pages=30):
         logs.append((url, "hit", f"Deep [{pd_}/{max_pages}]: {urlparse(url).path[:40]}"))
         html, status = fetch_page(url, timeout=12)
         if status == 403:
-            logs.append((url, "blocked", "Cloudflare/403 in Deep phase")); return {"emails": sort_by_tier(all_e), "time": round(time.time()-t0,1), "pages": pd_, "blocked": True, "logs": logs}
+            logs.append((url, "blocked", "Cloudflare/403 in Deep phase"))
+            return {"emails": sort_by_tier(all_e), "time": round(time.time()-t0,1), "pages": pd_, "blocked": True, "logs": logs}
         if html:
             new = extract_emails(html) - all_e
             all_e.update(new)
@@ -175,11 +169,10 @@ def run_deep_scan(root_url, skip_t1, max_pages=30):
     return {"emails": sort_by_tier(all_e), "time": round(time.time()-t0,1), "pages": pd_, "blocked": False, "logs": logs}
 
 def run_loop_scan(root_url, max_loops=2):
-    """Phase 3: Relentless loop with randomized delays."""
     logs = []; t0 = time.time()
     for i in range(max_loops):
         logs.append((root_url, "loop", f"Loop attempt {i+1}/{max_loops} (randomized delay)"))
-        time.sleep(random.uniform(2, 5)) # Be polite, bypass rate limits
+        time.sleep(random.uniform(2, 5))
         result = run_deep_scan(root_url, skip_t1=True, max_pages=15)
         logs.extend(result["logs"])
         if result["emails"]:
@@ -224,7 +217,6 @@ def validate_email_full(email):
                 code2, _ = s.rcpt(f"randomaddress9x7z@{domain}")
                 ca = code2 == 250
         except: pass
-
     free = domain in FREE_EMAIL_DOMAINS
     if not syntax: st, re = "Not Deliverable", "Invalid syntax"
     elif not mx_ok: st, re = "Not Deliverable", "No MX records"
@@ -237,10 +229,7 @@ def validate_email_full(email):
         if ca: st, re = "Risky", "Catch-all, mailbox unknown"
         elif free: st, re = "Deliverable", "Free provider (unverified)"
         else: st, re = "Deliverable", "MX/SPF OK, mailbox unconfirmed"
-        
     return {"status": st, "reason": re, "spf": spf, "dmarc": dmarc, "catch_all": ca, "free": free}
-
-import smtplib
 
 # ── XLSX BUILDER ──────────────────────────────────────────────────────────────
 def _mf(h): return PatternFill("solid", fgColor=h)
@@ -265,10 +254,9 @@ def _cl(ws, r, c, v, fl=None, fn_=None, al=None):
     if al: cl.alignment = al
     cl.border = _bd()
 
-def build_xlsx(results, input_type):
+def build_xlsx(results):
     wb = Workbook()
     ws = wb.active; ws.title = "Results"; ws.freeze_panes = "A2"; ws.row_dimensions[1].height = 26
-    
     base_cols = [("#",5),("Source URL",35),("Domain",22),("Best Email",32),("Tier",9),
                  ("Status",16),("Score",8),("Reason",22),("Phase Found",12),
                  ("Pages",8),("Time(s)",9),("Total Emails",12)]
@@ -278,7 +266,6 @@ def build_xlsx(results, input_type):
         v = row.get("val"); st_ = v.get("status","") if v else ""
         rf = SF.get(st_, RF_N); em = row.get("best_email","")
         tf = TF1 if "1" in row.get("tier","") else (TF2 if "2" in row.get("tier","") else TF3)
-        
         _cl(ws,ri,1,ri-1,RF_N,_fn(),_ct())
         _cl(ws,ri,2,row.get("url",""),RF_N,_fn(s=9),_lt())
         _cl(ws,ri,3,row.get("domain",""),RF_N,_fn(True),_lt())
@@ -293,7 +280,6 @@ def build_xlsx(results, input_type):
         _cl(ws,ri,11,row.get("time",""),RF_N,_fn(),_ct())
         _cl(ws,ri,12,"; ".join(row.get("all_emails",[])),RF_N,_fn(n="Courier New",s=8,c="666666"),_lt())
 
-    # Sheet 2: Crawl Log
     ws2 = wb.create_sheet("Crawl Log"); ws2.freeze_panes = "A2"
     for ci, (n, w) in enumerate([("Domain",22),("Page URL",50),("Action",10),("Detail",50),("Time(s)",8)], 1): _hdr(ws2, 1, ci, n, w)
     r2 = 2
@@ -307,7 +293,8 @@ def build_xlsx(results, input_type):
             _cl(ws2,r2,4,det,RF_N,_fn(s=9),_lt())
             ws2.row_dimensions[r2].height = 15; r2+=1
 
-    # Sheet 3: Stats
+    ws3 = wb.create_sheet("Stats")
+    ws3.column_dimensions["A"].width = 30; ws3.column_dimensions["B"].width = 15
     nt = len(results)
     ne = sum(1 for r in results if r.get("best_email"))
     nq = sum(1 for r in results if r.get("phase")=="Quick")
@@ -316,9 +303,6 @@ def build_xlsx(results, input_type):
     nv = sum(1 for r in results if (r.get("val",{}) or {}).get("status")=="Deliverable")
     nr = sum(1 for r in results if (r.get("val",{}) or {}).get("status")=="Risky")
     nb = sum(1 for r in results if (r.get("val",{}) or {}).get("status")=="Not Deliverable")
-    
-    ws3 = wb.create_sheet("Stats")
-    ws3.column_dimensions["A"].width = 30; ws3.column_dimensions["B"].width = 15
     stats = [("Total URLs Processed", nt), ("URLs with Emails", ne), ("Found in Quick Phase", nq),
              ("Required Deep Phase", nd), ("Required Loop Phase", nl), ("Validated Deliverable", nv),
              ("Validated Risky", nr), ("Validated Failed", nb)]
@@ -379,7 +363,7 @@ with st.sidebar:
     st.divider()
     res = st.session_state.get("sc_results", [])
     if res:
-        xlsx = build_xlsx(res, "url")
+        xlsx = build_xlsx(res)
         st.download_button("Export .xlsx", xlsx, f"scrape_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="sc_xlsx", use_container_width=True)
     st.divider()
     st.markdown('<div style="font-size:9px;color:#333;line-height:1.8">Phase 1: Quick (4 pages max)<br>Phase 2: Deep (30 pages max)<br>Phase 3: Loop (Relentless)</div>', unsafe_allow_html=True)
@@ -389,7 +373,7 @@ for k, v in {"sc_results":[],"sc_running":False,"sc_idx":0,"sc_log":[],"sc_queue
     if k not in st.session_state: st.session_state[k] = v
 
 # ── Header ────────────────────────────────────────────────────────────────────
-st.markdown(f"""<div class="mh-ph"><div class="mh-pi">🔍</div><div><div class="mh-pt">Smart Pipeline Scraper</div><div class="mh-ps">Automated 3-phase scanning · keeps all input data · clean XLSX export</div></div></div>""", unsafe_allow_html=True)
+st.markdown(f"""<div class="mh-ph"><div class="mh-pi">🔍</div><div><div class="mh-pt">Smart Pipeline Scraper</div><div class="mh-ps">Automated 3-phase scanning · clean XLSX export</div></div></div>""", unsafe_allow_html=True)
 
 # ── Input ─────────────────────────────────────────────────────────────────────
 c1, c2 = st.columns([4, 1])
@@ -458,15 +442,16 @@ if st.session_state.sc_running and tot > 0:
 ll = st.session_state.sc_log
 if ll:
     h = ""
-    for kind, text in ll[-100:]:
-        if kind == "row": h += f'<div class="lr">[ {text} ]</div>'
-        elif kind == "hit": h += f'<div class="li">  -> {text}</div>'
-        elif kind == "email": h += f'<div class="lo">  @ {text}</div>'
-        elif kind == "skip": h += f'<div class="lx">  STOP - {text}</div>'
-        elif kind == "blocked": h += f'<div class="lf">  BLOCKED - {text}</div>'
-        elif kind == "loop": h += f'<div class="lx">  LOOP - {text}</div>'
-        elif kind == "ok": h += f'<div class="lo">  OK - {text}</div>'
-        elif kind == "fail": h += f'<div class="lf">  FAIL - {text}</div>'
+    # FIX: Unpack exactly 3 elements (source, action, detail)
+    for source, action, detail in ll[-100:]:
+        if action == "row": h += f'<div class="lr">[ {detail} ]</div>'
+        elif action == "hit": h += f'<div class="li">  -> {detail}</div>'
+        elif action == "email": h += f'<div class="lo">  @ {detail}</div>'
+        elif action == "skip": h += f'<div class="lx">  STOP - {detail}</div>'
+        elif action == "blocked": h += f'<div class="lf">  BLOCKED - {detail}</div>'
+        elif action == "loop": h += f'<div class="lx">  LOOP - {detail}</div>'
+        elif action == "ok": h += f'<div class="lo">  OK - {detail}</div>'
+        elif action == "fail": h += f'<div class="lf">  FAIL - {detail}</div>'
     st.markdown(f'<div class="mh-log">{h}</div>', unsafe_allow_html=True)
 
 # ── Metrics & Table ──────────────────────────────────────────────────────────
@@ -501,23 +486,25 @@ if st.session_state.sc_running:
         st.session_state.sc_running = False; st.rerun()
     else:
         url = q[idx]; domain = urlparse(url).netloc
-        st.session_state.sc_log.append(("row", f"{domain} (Phase: {st.session_state.sc_phase})"))
+        
+        # FIX: Ensure all manual logs use exactly 3 elements (source, action, detail)
+        st.session_state.sc_log.append(("", "row", f"{domain} (Phase: {st.session_state.sc_phase})"))
         
         result_data = None
         phase = st.session_state.sc_phase
 
         if phase == "Quick":
             res = run_quick_scan(url, skip_t1)
-            st.session_state.sc_log.extend([(u, a, d) for u, a, d in res["logs"]])
+            st.session_state.sc_log.extend(res["logs"])
             if res["emails"] or res["blocked"]:
                 result_data = {"phase": "Quick", **res}
             else:
                 st.session_state.sc_log.append((url, "fail", "Quick failed, pushing to Deep"))
-                st.session_state.sc_phase = "Deep" # Don't increment idx, re-run in deep
+                st.session_state.sc_phase = "Deep"
 
         elif phase == "Deep":
             res = run_deep_scan(url, skip_t1, max_pages=30)
-            st.session_state.sc_log.extend([(u, a, d) for u, a, d in res["logs"]])
+            st.session_state.sc_log.extend(res["logs"])
             if res["emails"] or res["blocked"] or not do_loop:
                 result_data = {"phase": "Deep", **res}
             else:
@@ -526,10 +513,9 @@ if st.session_state.sc_running:
 
         elif phase == "Loop":
             res = run_loop_scan(url, max_loops=max_loops)
-            st.session_state.sc_log.extend([(u, a, d) for u, a, d in res["logs"]])
+            st.session_state.sc_log.extend(res["logs"])
             result_data = {"phase": "Loop", **res}
 
-        # If we got a result, finalize row
         if result_data:
             best = pick_best(result_data["emails"]) or ""
             row_obj = {
@@ -555,7 +541,7 @@ if st.session_state.sc_running:
 
             st.session_state.sc_results.append(row_obj)
             st.session_state.sc_idx += 1
-            st.session_state.sc_phase = "Quick" # Reset phase for next URL
+            st.session_state.sc_phase = "Quick"
 
         st.rerun()
 
